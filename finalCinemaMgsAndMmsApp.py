@@ -105,9 +105,9 @@ def generate_priorities(n, low=1, high=3):
 
 
 # --------------------------
-# Patient class
+# Customer class
 # --------------------------
-class Patient:
+class Customer:
     def __init__(self, pid, arrival, service, priority=None):
         self.id = pid
         self.arrival = int(arrival)
@@ -151,7 +151,7 @@ def simulate_preemptive_v5(mean_arrival, mean_service, servers_count=1, pr_range
     services = generate_service_times(n, mean_service, dist_type, a=a, b=b)
     priorities = generate_priorities(n, pr_range[0], pr_range[1])
 
-    patients = [Patient(i + 1, arrivals[i], services[i], priorities[i]) for i in range(n)]
+    customers = [Customer(i + 1, arrivals[i], services[i], priorities[i]) for i in range(n)]
 
     servers = [{'p': None, 'end': None} for _ in range(servers_count)]
     waiting = []
@@ -164,7 +164,7 @@ def simulate_preemptive_v5(mean_arrival, mean_service, servers_count=1, pr_range
     util_over_time = []
 
     def next_arrival_time():
-        return patients[arrival_idx].arrival if arrival_idx < n else math.inf
+        return customers[arrival_idx].arrival if arrival_idx < n else math.inf
 
     def next_completion_time():
         times = [s['end'] for s in servers if s['p'] is not None]
@@ -179,8 +179,8 @@ def simulate_preemptive_v5(mean_arrival, mean_service, servers_count=1, pr_range
         if ta <= tc:
             t = ta
             arrivals_at_t = []
-            while arrival_idx < n and patients[arrival_idx].arrival == t:
-                arrivals_at_t.append(patients[arrival_idx])
+            while arrival_idx < n and customers[arrival_idx].arrival == t:
+                arrivals_at_t.append(customers[arrival_idx])
                 arrival_idx += 1
 
             # arrivals at same time sorted by priority, arrival, id
@@ -218,7 +218,6 @@ def simulate_preemptive_v5(mean_arrival, mean_service, servers_count=1, pr_range
                         servers[free_sid]['end'] = t + newp.remaining
                     else:
                         waiting.append(newp)
-
             # after arrivals, try to fill any free servers from waiting queue (consider preferred_server)
             assigned = True
             while assigned:
@@ -286,9 +285,9 @@ def simulate_preemptive_v5(mean_arrival, mean_service, servers_count=1, pr_range
         queue_lengths.append(len(waiting))
         util_over_time.append(busy_count / servers_count if servers_count > 0 else 0)
 
-    # finalize any unfinished patients (shouldn't happen often, but safe)
+    # finalize any unfinished customers (shouldn't happen often, but safe)
     last_completion = 0
-    for p in patients:
+    for p in customers:
         if p.end is None:
             if p.first_start is None:
                 p.first_start = p.arrival
@@ -300,7 +299,7 @@ def simulate_preemptive_v5(mean_arrival, mean_service, servers_count=1, pr_range
 
     # build segments per server for Gantt
     segments = {sid + 1: [] for sid in range(servers_count)}
-    for p in patients:
+    for p in customers:
         for seg in p.segments:
             sid, st, en = seg[0], seg[1], seg[2] if seg[2] is not None else seg[1]
             segments[sid].append((p.id, int(st), int(en)))
@@ -325,7 +324,7 @@ def simulate_preemptive_v5(mean_arrival, mean_service, servers_count=1, pr_range
     return {
         'cp': cp, 'cp_lookup': cp_lookup, 'avg': avg_times,
         'inter_arr': inter_arr, 'arrivals': arrivals, 'services': services,
-        'priorities': priorities, 'patients': patients, 'segments': segments,
+        'priorities': priorities, 'customers': customers, 'segments': segments,
         'busy_raw': server_busy_raw, 'util_map': util_map, 'T': T,
         'timeline': timeline, 'queue': queue_lengths, 'util_time': util_over_time
     }
@@ -336,7 +335,7 @@ def simulate_nonpreemptive_fcfs(mean_arrival, mean_service, servers_count=1, dis
     n = len(arrivals)
     services = generate_service_times(n, mean_service, dist_type, a=a, b=b)
 
-    patients = [Patient(i + 1, arrivals[i], services[i], priority=None) for i in range(n)]
+    customers = [Customer(i + 1, arrivals[i], services[i], priority=None) for i in range(n)]
 
     servers = [{'p': None, 'end': None} for _ in range(servers_count)]
     waiting = []
@@ -349,7 +348,7 @@ def simulate_nonpreemptive_fcfs(mean_arrival, mean_service, servers_count=1, dis
     util_over_time = []
 
     def next_arrival_time():
-        return patients[arrival_idx].arrival if arrival_idx < n else math.inf
+        return customers[arrival_idx].arrival if arrival_idx < n else math.inf
 
     def next_completion_time():
         times = [s['end'] for s in servers if s['p'] is not None]
@@ -364,8 +363,8 @@ def simulate_nonpreemptive_fcfs(mean_arrival, mean_service, servers_count=1, dis
         if ta <= tc:
             t = ta
             arrivals_at_t = []
-            while arrival_idx < n and patients[arrival_idx].arrival == t:
-                arrivals_at_t.append(patients[arrival_idx])
+            while arrival_idx < n and customers[arrival_idx].arrival == t:
+                arrivals_at_t.append(customers[arrival_idx])
                 arrival_idx += 1
 
             for newp in arrivals_at_t:
@@ -376,7 +375,6 @@ def simulate_nonpreemptive_fcfs(mean_arrival, mean_service, servers_count=1, dis
                     servers[free_sid]['end'] = t + newp.remaining
                 else:
                     waiting.append(newp)
-
             assigned = True
             while assigned:
                 assigned = False
@@ -418,7 +416,7 @@ def simulate_nonpreemptive_fcfs(mean_arrival, mean_service, servers_count=1, dis
         util_over_time.append(busy_count / servers_count if servers_count > 0 else 0)
 
     last_completion = 0
-    for p in patients:
+    for p in customers:
         if p.end is None:
             if p.first_start is None:
                 p.first_start = p.arrival
@@ -429,7 +427,7 @@ def simulate_nonpreemptive_fcfs(mean_arrival, mean_service, servers_count=1, dis
             last_completion = p.end
 
     segments = {sid + 1: [] for sid in range(servers_count)}
-    for p in patients:
+    for p in customers:
         for seg in p.segments:
             sid, st, en = seg[0], seg[1], seg[2] if seg[2] is not None else seg[1]
             segments[sid].append((p.id, int(st), int(en)))
@@ -454,7 +452,7 @@ def simulate_nonpreemptive_fcfs(mean_arrival, mean_service, servers_count=1, dis
     return {
         'cp': cp, 'cp_lookup': cp_lookup, 'avg': avg_times,
         'inter_arr': inter_arr, 'arrivals': arrivals, 'services': services,
-        'priorities': [None] * n, 'patients': patients, 'segments': segments,
+        'priorities': [None] * n, 'customers': customers, 'segments': segments,
         'busy_raw': server_busy_raw, 'util_map': util_map, 'T': T,
         'timeline': timeline, 'queue': queue_lengths, 'util_time': util_over_time
     }
@@ -529,7 +527,6 @@ class CinemaApp:
         self.e_b = ttk.Entry(form, width=5)
         self.e_b.insert(0, "5")
         self.e_b.grid(row=1, column=3)
-
         # Service dist
         ttk.Label(form, text="Service Dist:").grid(row=2, column=0, sticky="w", pady=4)
         self.cb_dist = ttk.Combobox(form, values=["normal", "uniform", "lognormal", "gamma", "exponential"],
@@ -672,7 +669,7 @@ class CinemaApp:
                 else:
                     hdr = ["S.No","InterArr","Arrival","Service","Start","End","Turnaround","Wait","Resp"]
                 writer.writerow(hdr)
-                for i, p in enumerate(self.last_result['patients']):
+                for i, p in enumerate(self.last_result['customers']):
                     if self.priority_var.get():
                         writer.writerow([i+1, self.last_result['inter_arr'][i], self.last_result['arrivals'][i],
                                          self.last_result['services'][i], p.priority if p.priority is not None else "",
@@ -854,7 +851,7 @@ class CinemaApp:
         self.populate_performance(res)
 
         # draw charts / gantt
-        self.draw_gantt_and_charts(res['segments'], res['patients'], use_priority, model,
+        self.draw_gantt_and_charts(res['segments'], res['customers'], use_priority, model,
                                    timeline=res.get('timeline', []), queue=res.get('queue', []), util_time=res.get('util_time', []))
 
     def populate_event_table(self, res, use_priority):
@@ -863,14 +860,14 @@ class CinemaApp:
             self.tree.delete(i)
         # insert rows
         if use_priority:
-            for i, p in enumerate(res['patients']):
+            for i, p in enumerate(res['customers']):
                 vals = (i+1, res['inter_arr'][i], res['arrivals'][i], res['services'][i],
                         p.priority if p.priority is not None else "", p.first_start if p.first_start is not None else 0,
                         p.end if p.end is not None else 0, p.turnaround if p.turnaround is not None else 0,
                         p.wait if p.wait is not None else 0, p.response if p.response is not None else 0)
                 self.tree.insert("", "end", values=vals)
         else:
-            for i, p in enumerate(res['patients']):
+            for i, p in enumerate(res['customers']):
                 vals = (i+1, res['inter_arr'][i], res['arrivals'][i], res['services'][i],
                         "", p.first_start if p.first_start is not None else 0,
                         p.end if p.end is not None else 0, p.turnaround if p.turnaround is not None else 0,
@@ -892,7 +889,7 @@ class CinemaApp:
 
         for sid, segs in sorted(res['segments'].items()):
             pids = [pid for pid, _, _ in segs]
-            pats = [p for p in res['patients'] if p.id in pids]
+            pats = [p for p in res['customers'] if p.id in pids]
             if not pats:
                 continue
             avgt = mean([p.turnaround for p in pats])
@@ -903,7 +900,7 @@ class CinemaApp:
 
 
     # draw_gantt_and_charts adapted to pack into gantt_frame (re-used mostly)
-    def draw_gantt_and_charts(self, segments, patients, use_priority, model, timeline=None, queue=None, util_time=None):
+    def draw_gantt_and_charts(self, segments, customers, use_priority, model, timeline=None, queue=None, util_time=None):
         for w in self.gantt_frame.winfo_children():
             w.destroy()
 
@@ -925,7 +922,7 @@ class CinemaApp:
         y = 0
         for sid in sorted(segments.keys()):
             for pid, st, en in segments[sid]:
-                p = next((pp for pp in patients if pp.id == pid), None)
+                p = next((pp for pp in customers if pp.id == pid), None)
                 priority = p.priority if p is not None else None
 
                 # choose color:
