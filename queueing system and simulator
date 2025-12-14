@@ -1,4 +1,4 @@
-# CinemaMgsAndMmsApp.py
+
 import math
 import random
 from decimal import Decimal, localcontext
@@ -1504,3 +1504,4 @@ if __name__ == "__main__":
     root = tb.Window(themename="darkly")
     app = CinemaApp(root)
     root.mainloop()
+
