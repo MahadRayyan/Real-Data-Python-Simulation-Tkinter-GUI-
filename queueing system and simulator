@@ -14,6 +14,144 @@ from statistics import mean
 random.seed(0)
 
 # --------------------------
+# Queueing Theory Functions 
+# --------------------------
+def uniform_mean_variance(a, b):
+    mean = (a + b) / 2
+    variance = ((b - a) ** 2) / 12
+    return mean, variance
+
+
+# ----------------------------------------------------
+# G/G/c Queue (arrival + service can be uniform)
+# ----------------------------------------------------
+def GGC_Queueing(arrival_rate, service_rate, c,
+                 ArrivalVariance, ServiceVariance,
+                 arrival_dist="general", service_dist="general",
+                 arrival_a=None, arrival_b=None,
+                 service_a=None, service_b=None):
+
+    # ----- Apply uniform distribution for arrival -----
+    if arrival_dist == "uniform":
+        arrival_mean, ArrivalVariance = uniform_mean_variance(arrival_a, arrival_b)
+        arrival_rate = 1 / arrival_mean
+
+    # ----- Apply uniform distribution for service -----
+    if service_dist == "uniform":
+        service_mean, ServiceVariance = uniform_mean_variance(service_a, service_b)
+        service_rate = 1 / service_mean
+
+    lambd = arrival_rate
+    mu = service_rate
+    rho = lambd / (c * mu)
+
+    if rho > 1:
+        raise ValueError("System unstable")
+
+    Ca2 = ArrivalVariance / ((1 / lambd) ** 2)
+    Cs2 = ServiceVariance / ((1 / mu) ** 2)
+
+    # -------- Single server --------
+    if c == 1:
+        numerator = rho ** 2 * (1 + Cs2) * (Ca2 + rho ** 2 * Cs2)
+        denominator = 2 * (1 - rho) * (1 + rho ** 2 * Cs2)
+        Lq = numerator / denominator
+        Wq = Lq / lambd
+        Ws = Wq + 1 / mu
+        Ls = lambd * Ws
+        idle = 1 - rho
+        return Lq, Wq, Ws, Ls, idle
+
+    # -------- Multi-server MMC base --------
+    cp = c * rho
+    sum_terms = sum((cp ** m) / math.factorial(m) for m in range(c))
+    P0 = 1 / (sum_terms + (cp ** c) / (math.factorial(c) * (1 - rho)))
+
+    Wq_MMC = (P0 * (cp ** c) * rho) / (math.factorial(c) * lambd * (1 - rho) ** 2)
+
+    # Apply G/G/c correction
+    Wq = Wq_MMC * ((Ca2 + Cs2) / 2)
+
+    Lq = lambd * Wq
+    Ws = Wq + 1 / mu
+    Ls = lambd * Ws
+    idle = P0
+    return Lq, Wq, Ws, Ls, idle
+
+
+
+# ----------------------------------------------------
+# M/G/c Queue (service can be uniform)
+# ----------------------------------------------------
+def MGC_Queueing(arrival_rate, service_rate, c,
+                 ServiceVariance,
+                 service_dist="general",
+                 service_a=None, service_b=None):
+
+    # ----- Apply uniform distribution for service -----
+    if service_dist == "uniform":
+        service_mean, ServiceVariance = uniform_mean_variance(service_a, service_b)
+        service_rate = 1 / service_mean
+
+    lambd = arrival_rate
+    mu = service_rate
+    rho = lambd / (c * mu)
+
+    if rho > 1:
+        raise ValueError("System unstable")
+
+    Cs2 = ServiceVariance / ((1 / mu) ** 2)
+
+    # -------- Single server M/G/1 --------
+    if c == 1:
+        Lq = (lambd ** 2 * ServiceVariance + rho ** 2) / (2 * (1 - rho))
+        Wq = Lq / lambd
+        Ws = Wq + 1 / mu
+        Ls = lambd * Ws
+        idle = 1 - rho
+        return Lq, Wq, Ws, Ls, idle
+
+    # -------- Multi-server base MMC --------
+    cp = c * rho
+    sum_terms = sum((cp ** m) / math.factorial(m) for m in range(c))
+    P0 = 1 / (sum_terms + (cp ** c) / (math.factorial(c) * (1 - rho)))
+
+    Wq_MMC = (P0 * (cp ** c) * rho) / (math.factorial(c) * lambd * (1 - rho) ** 2)
+
+    # Apply M/G/c correction
+    Wq = Wq_MMC * ((1 + Cs2) / 2)
+
+    Lq = lambd * Wq
+    Ws = Wq + 1 / mu
+    Ls = lambd * Ws
+    idle = P0
+    return Lq, Wq, Ws, Ls, idle
+
+def MMC_Queueing(arrival_rate, service_rate, c):
+    lambd = arrival_rate
+    mu = service_rate
+    rho = lambd / (c * mu)
+
+    if rho > 1:
+        raise ValueError("System unstable (rho > 1)")
+
+    cp = c * rho  # same as a = λ/μ
+
+    # Compute P0
+    sum_terms = sum((cp**m) / math.factorial(m) for m in range(c))
+    P0 = 1 / (sum_terms + (cp**c) / (math.factorial(c) * (1 - rho)))
+
+    # Lq formula from PDF
+    Lq = (P0 * (cp**c) * rho) / (math.factorial(c) * (1 - rho)**2)
+
+    Wq = Lq / lambd
+    Ws = Wq + 1 / mu
+    Ls = lambd * Ws
+    idle = P0
+
+    return Lq, Wq, Ws, Ls, idle
+
+# --------------------------
 # Arrival / service / priority generation
 # --------------------------
 def generate_arrivals_by_cp(mean_arrival):
@@ -145,8 +283,46 @@ class Customer:
 # --------------------------
 # Simulators
 # --------------------------
-def simulate_preemptive_v5(mean_arrival, mean_service, servers_count=1, pr_range=(1, 3), dist_type="normal", a=None, b=None):
-    cp, cp_lookup, avg_times, inter_arr, arrivals = generate_arrivals_by_cp(mean_arrival)
+def simulate_preemptive_v5(mean_arrival, mean_service, servers_count=1, pr_range=(1, 3), dist_type="normal", a=None, b=None, n_override=None, arrival_dist="poisson", arrival_a=None, arrival_b=None):
+    # generate arrivals depending on arrival_dist
+    if arrival_dist == "uniform":
+        # generate deterministic arrivals via uniform interarrival times in [a,b)
+        # interpret a/b as interarrival time range — produce cumulative arrivals until we have enough or until reasonable horizon
+        if arrival_a is None or arrival_b is None:
+            # fallback to poisson generator if missing
+            cp, cp_lookup, avg_times, inter_arr, arrivals = generate_arrivals_by_cp(mean_arrival)
+        else:
+            # produce n_override interarrival values
+            target_n = n_override if n_override is not None else 20
+            inter_arr = []
+            for _ in range(target_n):
+                r = random.random()
+                inter_arr.append(int(max(0, round(arrival_a + (arrival_b - arrival_a) * r))))
+            if inter_arr:
+                inter_arr[0] = 0
+            arrivals = [inter_arr[0]]
+            for i in range(1, len(inter_arr)):
+                arrivals.append(arrivals[i - 1] + inter_arr[i])
+            # pad the CP stuff for compatibility but not used much
+            cp = []; cp_lookup = []; avg_times = list(range(len(arrivals)))
+    else:
+        cp, cp_lookup, avg_times, inter_arr, arrivals = generate_arrivals_by_cp(mean_arrival)
+
+    # if n_override provided, truncate or extend arrivals to that length
+    if n_override is not None:
+        if len(arrivals) >= n_override:
+            arrivals = arrivals[:n_override]
+            inter_arr = inter_arr[:n_override] if 'inter_arr' in locals() else [0]*n_override
+        else:
+            # if arrivals shorter than n_override (rare), extend by repeating last + 1
+            last = arrivals[-1] if arrivals else 0
+            while len(arrivals) < n_override:
+                last += 1
+                arrivals.append(last)
+            # ensure inter_arr exists
+            if 'inter_arr' not in locals() or len(inter_arr) < n_override:
+                inter_arr = [0] + [1] * (n_override - 1)
+
     n = len(arrivals)
     services = generate_service_times(n, mean_service, dist_type, a=a, b=b)
     priorities = generate_priorities(n, pr_range[0], pr_range[1])
@@ -323,15 +499,46 @@ def simulate_preemptive_v5(mean_arrival, mean_service, servers_count=1, pr_range
 
     return {
         'cp': cp, 'cp_lookup': cp_lookup, 'avg': avg_times,
-        'inter_arr': inter_arr, 'arrivals': arrivals, 'services': services,
+        'inter_arr': inter_arr if 'inter_arr' in locals() else [],
+        'arrivals': arrivals, 'services': services,
         'priorities': priorities, 'customers': customers, 'segments': segments,
         'busy_raw': server_busy_raw, 'util_map': util_map, 'T': T,
         'timeline': timeline, 'queue': queue_lengths, 'util_time': util_over_time
     }
 
 
-def simulate_nonpreemptive_fcfs(mean_arrival, mean_service, servers_count=1, dist_type="normal", a=None, b=None):
-    cp, cp_lookup, avg_times, inter_arr, arrivals = generate_arrivals_by_cp(mean_arrival)
+def simulate_nonpreemptive_fcfs(mean_arrival, mean_service, servers_count=1, dist_type="normal", a=None, b=None, n_override=None, arrival_dist="poisson", arrival_a=None, arrival_b=None):
+    # arrival generation similar to preemptive function
+    if arrival_dist == "uniform":
+        if arrival_a is None or arrival_b is None:
+            cp, cp_lookup, avg_times, inter_arr, arrivals = generate_arrivals_by_cp(mean_arrival)
+        else:
+            target_n = n_override if n_override is not None else 20
+            inter_arr = []
+            for _ in range(target_n):
+                r = random.random()
+                inter_arr.append(int(max(0, round(arrival_a + (arrival_b - arrival_a) * r))))
+            if inter_arr:
+                inter_arr[0] = 0
+            arrivals = [inter_arr[0]]
+            for i in range(1, len(inter_arr)):
+                arrivals.append(arrivals[i - 1] + inter_arr[i])
+            cp = []; cp_lookup = []; avg_times = list(range(len(arrivals)))
+    else:
+        cp, cp_lookup, avg_times, inter_arr, arrivals = generate_arrivals_by_cp(mean_arrival)
+
+    if n_override is not None:
+        if len(arrivals) >= n_override:
+            arrivals = arrivals[:n_override]
+            inter_arr = inter_arr[:n_override] if 'inter_arr' in locals() else [0]*n_override
+        else:
+            last = arrivals[-1] if arrivals else 0
+            while len(arrivals) < n_override:
+                last += 1
+                arrivals.append(last)
+            if 'inter_arr' not in locals() or len(inter_arr) < n_override:
+                inter_arr = [0] + [1] * (n_override - 1)
+
     n = len(arrivals)
     services = generate_service_times(n, mean_service, dist_type, a=a, b=b)
 
@@ -451,7 +658,8 @@ def simulate_nonpreemptive_fcfs(mean_arrival, mean_service, servers_count=1, dis
 
     return {
         'cp': cp, 'cp_lookup': cp_lookup, 'avg': avg_times,
-        'inter_arr': inter_arr, 'arrivals': arrivals, 'services': services,
+        'inter_arr': inter_arr if 'inter_arr' in locals() else [],
+        'arrivals': arrivals, 'services': services,
         'priorities': [None] * n, 'customers': customers, 'segments': segments,
         'busy_raw': server_busy_raw, 'util_map': util_map, 'T': T,
         'timeline': timeline, 'queue': queue_lengths, 'util_time': util_over_time
@@ -464,14 +672,14 @@ class CinemaApp:
         # use a dark, cinematic theme
         self.style = tb.Style("darkly")  # darkly is cinematic; user can change
         self.root = self.style.master
-        self.root.title("🎬 Cinema Queue Simulator")
+        self.root.title("Group 2 Queue Simulator")
         self.root.geometry("1300x860")
         self.root.minsize(1000, 700)
 
         # top header
         header = ttk.Frame(self.root, padding=(12, 10))
         header.pack(fill=X)
-        title = ttk.Label(header, text="🎬 Cinema Queue Simulator", font=("Helvetica", 18, "bold"))
+        title = ttk.Label(header, text="Queue Simulator", font=("Helvetica", 18, "bold"))
         title.pack(side=LEFT)
         subtitle = ttk.Label(header, text="Simulate ticket counters / concession queues — visualize wait, response & utilization", font=("Helvetica", 10))
         subtitle.pack(side=LEFT, padx=12)
@@ -488,7 +696,7 @@ class CinemaApp:
         main.pack(fill=BOTH, expand=YES, padx=10, pady=(6, 10))
 
         # ----- sidebar (controls) -----
-        sidebar = ttk.Frame(main, width=320, padding=(12, 10))
+        sidebar = ttk.Frame(main, width=360, padding=(12, 10))
         sidebar.pack(side=LEFT, fill=Y, padx=(0, 12))
         sidebar.pack_propagate(False)
 
@@ -502,10 +710,38 @@ class CinemaApp:
         form = ttk.Frame(sidebar)
         form.pack(fill=X, pady=(6, 10))
 
-        ttk.Label(form, text="Mean Arrival λ:").grid(row=0, column=0, sticky="w", pady=4)
-        self.e_lambda = ttk.Entry(form, width=10); self.e_lambda.insert(0, "1.0"); self.e_lambda.grid(row=0, column=1, sticky="e")
+        # Row 0: Mean Arrival lambda (may be hidden), and arrival distribution & a/b if uniform
+        # Mean Arrival λ (for non-uniform arrivals)
+        self.label_lambda = ttk.Label(form, text="Mean Arrival λ:")
+        self.label_lambda.grid(row=0, column=0, sticky="w", pady=4)
 
-        # Mean Service μ (visible only when dist != uniform)
+        self.e_lambda = ttk.Entry(form, width=10)
+        self.e_lambda.insert(0, "1.0")
+        self.e_lambda.grid(row=0, column=1, sticky="e")
+
+        # Arrival Distribution dropdown
+        ttk.Label(form, text="InterArrival Dist:").grid(row=2, column=2, sticky="w", padx=(8,0))
+
+        self.cb_arrival_dist = ttk.Combobox(
+            form,
+            values=["poisson", "uniform", "normal", "lognormal", "gamma", "exponential"],
+            width=12,
+            state="readonly"
+        )
+        self.cb_arrival_dist.current(0)
+        self.cb_arrival_dist.grid(row=2, column=3, sticky="e")
+        self.cb_arrival_dist.bind("<<ComboboxSelected>>", self.on_arrival_dist_change)
+
+        # Arrival Uniform a,b — EXACT service layout style (row=0 but shown only when needed)
+        self.label_arrival_a = ttk.Label(form, text="    a :")
+        self.e_arrival_a = ttk.Entry(form, width=5)
+        self.e_arrival_a.insert(0, "1")
+
+        self.label_arrival_b = ttk.Label(form, text="b :")
+        self.e_arrival_b = ttk.Entry(form, width=5)
+        self.e_arrival_b.insert(0, "5")
+
+        # Row 1: Mean Service μ (visible only when service dist != uniform)
         self.label_mu = ttk.Label(form, text="Mean Service μ:")
         self.label_mu.grid(row=1, column=0, sticky="w", pady=4)
 
@@ -514,67 +750,71 @@ class CinemaApp:
         self.e_mu.grid(row=1, column=1, sticky="e")
 
         # Uniform a and b (visible only when dist == uniform)
-        self.label_a = ttk.Label(form, text="                     a :")
+        self.label_a = ttk.Label(form, text="    a   :   ")
         self.label_a.grid(row=1, column=0, sticky="w")
 
         self.e_a = ttk.Entry(form, width=5)
         self.e_a.insert(0, "1")
         self.e_a.grid(row=1, column=1)
 
-        self.label_b = ttk.Label(form, text="b :        ")
+        self.label_b = ttk.Label(form, text="b :")
         self.label_b.grid(row=1, column=2, sticky="w")
 
         self.e_b = ttk.Entry(form, width=5)
         self.e_b.insert(0, "5")
         self.e_b.grid(row=1, column=3)
+
         # Service dist
         ttk.Label(form, text="Service Dist:").grid(row=2, column=0, sticky="w", pady=4)
-        self.cb_dist = ttk.Combobox(form, values=["normal", "uniform", "lognormal", "gamma", "exponential"],
+        self.cb_dist = ttk.Combobox(form, values=["uniform", "normal", "lognormal", "gamma", "exponential"],
                                     width=12, state="readonly")
         self.cb_dist.current(0)
         self.cb_dist.grid(row=2, column=1, sticky="e")
         # bind to change event to show/hide μ vs a/b
         self.cb_dist.bind("<<ComboboxSelected>>", self.on_dist_change)
 
-        ttk.Label(form, text="Priority low:").grid(row=3, column=0, sticky="w", pady=4)
-        self.e_plow = ttk.Entry(form, width=6); self.e_plow.insert(0, "1"); self.e_plow.grid(row=3, column=1, sticky="e")
+        # NEW: Service Variance input
+        ttk.Label(form, text="Service Var:").grid(row=3, column=0, sticky="w", pady=4)
+        self.e_service_var = ttk.Entry(form, width=10)
+        self.e_service_var.insert(0, "0.1")
+        self.e_service_var.grid(row=3, column=1, sticky="e")
 
-        ttk.Label(form, text="Priority high:").grid(row=4, column=0, sticky="w", pady=4)
-        self.e_phigh = ttk.Entry(form, width=6); self.e_phigh.insert(0, "3"); self.e_phigh.grid(row=4, column=1, sticky="e")
+        # NEW: Arrival Variance input
+        ttk.Label(form, text="Arrival Var:").grid(row=4, column=0, sticky="w", pady=4)
+        self.e_arrival_var = ttk.Entry(form, width=10)
+        self.e_arrival_var.insert(0, "0.1")
+        self.e_arrival_var.grid(row=4, column=1, sticky="e")
 
-        ttk.Label(form, text="Model:").grid(row=5, column=0, sticky="w", pady=6)
-        # changed: model is M/G/s or M/M/s
-        self.cb_model = ttk.Combobox(form, values=["M/G/s", "M/M/s"], width=12, state="readonly")
+        ttk.Label(form, text="Priority low:").grid(row=5, column=0, sticky="w", pady=4)
+        self.e_plow = ttk.Entry(form, width=6); self.e_plow.insert(0, "1"); self.e_plow.grid(row=5, column=1, sticky="e")
+
+        ttk.Label(form, text="Priority high:").grid(row=6, column=0, sticky="w", pady=4)
+        self.e_phigh = ttk.Entry(form, width=6); self.e_phigh.insert(0, "3"); self.e_phigh.grid(row=6, column=1, sticky="e")
+
+        ttk.Label(form, text="Model:").grid(row=7, column=0, sticky="w", pady=6)
+        # changed: model includes G/G/s
+        self.cb_model = ttk.Combobox(form, values=["M/M/s", "M/G/s", "G/G/s"], width=12, state="readonly")
         self.cb_model.current(0)
-        self.cb_model.grid(row=5, column=1, sticky="e")
+        self.cb_model.grid(row=7, column=1, sticky="e")
         self.cb_model.bind("<<ComboboxSelected>>", self.on_model_change)
 
         # NEW: Servers input (user types any positive integer)
-        ttk.Label(form, text="Servers s:").grid(row=6, column=0, sticky="w", pady=4)
+        ttk.Label(form, text="Servers s:").grid(row=8, column=0, sticky="w", pady=4)
         self.e_servers = ttk.Entry(form, width=6)
         self.e_servers.insert(0, "2")
-        self.e_servers.grid(row=6, column=1, sticky="e")
+        self.e_servers.grid(row=8, column=1, sticky="e")
 
         self.priority_var = tk.BooleanVar(value=True)
-        self.chk_priority = ttk.Checkbutton(sidebar, text="Use Preemptive Priority (VIP queue)", variable=self.priority_var)
+        self.chk_priority = ttk.Checkbutton(sidebar, text="Use Preemptive Priority", variable=self.priority_var)
         self.chk_priority.pack(anchor="w", pady=(8, 6))
 
-        # quick presets for cinema
-        ttk.Label(sidebar, text="Presets:", font=("Helvetica", 9, "bold")).pack(anchor="w", pady=(8, 4))
-        presets = ttk.Frame(sidebar)
-        presets.pack(fill=X)
-        ttk.Button(presets, text="Normal Day", bootstyle="success-outline", command=self.preset_normal).pack(side=LEFT, padx=4)
-        ttk.Button(presets, text="Peak Show", bootstyle="danger-outline", command=self.preset_peak).pack(side=LEFT, padx=4)
-        ttk.Button(presets, text="Matinee", bootstyle="info-outline", command=self.preset_matinee).pack(side=LEFT, padx=4)
-
-        ttk.Label(sidebar, text=" ").pack(fill=X, pady=(6, 6))
-
-        # run button big and cinematic
+        # NEW: Two buttons instead of one
         ttk.Button(sidebar, text="▶ Run Simulation", bootstyle="primary", command=self.run_sim).pack(fill=X, pady=(6, 4))
+        ttk.Button(sidebar, text="📊 Run Queueing System", bootstyle="success", command=self.run_queueing_system).pack(fill=X, pady=(0, 4))
         ttk.Button(sidebar, text="⏹ Stop (reset view)", bootstyle="light", command=self.clear_views).pack(fill=X)
 
         # footer note
-        ttk.Label(sidebar, text="Tip: Use VIP queue to model fast-track ticketing.", font=("Helvetica", 8, "italic")).pack(anchor="w", pady=(8, 0))
+        ttk.Label(sidebar, text="Tip: Use Preemptive Priority queue to model fast-track.", font=("Helvetica", 8, "italic")).pack(anchor="w", pady=(8, 0))
 
         # ----- main content (right) -----
         right = ttk.Frame(main)
@@ -624,11 +864,40 @@ class CinemaApp:
         self.gantt_frame = ttk.Frame(self.tab_graph)
         self.gantt_frame.pack(fill=BOTH, expand=YES, padx=8, pady=8)
 
+        # NEW: Queueing Theory Results tab
+        self.tab_queueing = ttk.Frame(self.nb)
+        self.nb.add(self.tab_queueing, text="Queueing Theory")
+        self.queueing_frame = ttk.Frame(self.tab_queueing)
+        self.queueing_frame.pack(fill=BOTH, expand=YES, padx=8, pady=8)
+
+        # Create treeview for queueing results
+        self.tree_queueing = ttk.Treeview(self.queueing_frame, columns=("metric", "value", "description"), show="headings")
+        queueing_heads = [("metric","Metric"),("value","Value"),("description","Description")]
+        for col, head in queueing_heads:
+            self.tree_queueing.heading(col, text=head)
+            self.tree_queueing.column(col, width=150, anchor="center")
+        self.tree_queueing.pack(side=LEFT, fill=BOTH, expand=YES)
+        q_scroll = ttk.Scrollbar(self.queueing_frame, orient=VERTICAL, command=self.tree_queueing.yview)
+        self.tree_queueing.configure(yscrollcommand=q_scroll.set)
+        q_scroll.pack(side=RIGHT, fill=Y)
+
+        # Add a text widget for additional information
+        self.queueing_info = tk.Text(self.queueing_frame, height=10, wrap=tk.WORD)
+        self.queueing_info.pack(fill=BOTH, expand=YES, pady=(10, 0))
+        self.queueing_info.insert("1.0", "Queueing theory results will appear here after running the queueing system.\n\n")
+        self.queueing_info.insert("end", "Formulas used:\n")
+        self.queueing_info.insert("end", "- M/M/s: Standard multi-server queue\n")
+        self.queueing_info.insert("end", "- M/G/s: Pollaczek–Khinchine formula for service time distribution\n")
+        self.queueing_info.insert("end", "- G/G/s: Kingman's approximation\n")
+
         # Keep last result for export
         self.last_result = None
+        self.last_queueing_result = None
 
-        # initial adjust visibility (hide a/b since default dist is normal)
+        # initial adjust visibility
         self.on_dist_change()
+        self.on_arrival_dist_change()
+        self.on_model_change()
 
     # ---------- helper UI actions ----------
     def reset_inputs(self):
@@ -636,12 +905,19 @@ class CinemaApp:
         self.e_mu.delete(0, END); self.e_mu.insert(0, "1.0")
         self.e_a.delete(0, END); self.e_a.insert(0, "1")
         self.e_b.delete(0, END); self.e_b.insert(0, "5")
+        self.e_arrival_a.delete(0, END); self.e_arrival_a.insert(0, "1")
+        self.e_arrival_b.delete(0, END); self.e_arrival_b.insert(0, "5")
+        self.e_service_var.delete(0, END); self.e_service_var.insert(0, "0.1")
+        self.e_arrival_var.delete(0, END); self.e_arrival_var.insert(0, "0.1")
         self.cb_dist.set("normal")
+        self.cb_arrival_dist.set("poisson")
         self.cb_model.set("M/G/s")
         self.e_servers.delete(0, END); self.e_servers.insert(0, "2")
         self.priority_var.set(True)
         self.clear_views()
         self.on_dist_change()
+        self.on_arrival_dist_change()
+        self.on_model_change()
 
     def clear_views(self):
         # clear trees and charts
@@ -649,8 +925,13 @@ class CinemaApp:
             self.tree.delete(i)
         for i in self.tree_perf.get_children():
             self.tree_perf.delete(i)
+        for i in self.tree_queueing.get_children():
+            self.tree_queueing.delete(i)
         for w in self.gantt_frame.winfo_children():
             w.destroy()
+        self.queueing_info.delete("1.0", END)
+        self.queueing_info.insert("1.0", "Queueing theory results will appear here after running the queueing system.")
+
     def export_csv(self):
         # simple CSV export of event table (asks user for filename)
         if not self.last_result:
@@ -689,36 +970,6 @@ class CinemaApp:
             messagebox.showinfo("Saved", f"Event table exported to:\n{fname}")
         except Exception as e:
             messagebox.showerror("Error", f"Failed to save file: {e}")
-
-    # ---------- presets ----------
-    def preset_normal(self):
-        self.e_lambda.delete(0, END); self.e_lambda.insert(0, "0.8")
-        self.e_mu.delete(0, END); self.e_mu.insert(0, "1.2")
-        self.cb_model.set("M/G/s")
-        self.e_servers.delete(0, END); self.e_servers.insert(0, "2")
-        self.cb_dist.set("normal")
-        self.priority_var.set(True)
-        self.on_dist_change()
-
-    def preset_peak(self):
-        self.e_lambda.delete(0, END); self.e_lambda.insert(0, "2.5")
-        self.e_mu.delete(0, END); self.e_mu.insert(0, "1.0")
-        self.cb_model.set("M/G/s")
-        self.e_servers.delete(0, END); self.e_servers.insert(0, "4")
-        self.cb_dist.set("gamma")
-        self.priority_var.set(True)
-        self.on_dist_change()
-
-    def preset_matinee(self):
-        self.e_lambda.delete(0, END); self.e_lambda.insert(0, "0.5")
-        # for uniform preset set a & b and set dist to uniform
-        self.e_a.delete(0, END); self.e_a.insert(0, "1")
-        self.e_b.delete(0, END); self.e_b.insert(0, "3")
-        self.cb_model.set("M/G/s")
-        self.e_servers.delete(0, END); self.e_servers.insert(0, "1")
-        self.cb_dist.set("uniform")
-        self.priority_var.set(False)
-        self.on_dist_change()
 
     # show/hide fields depending on distribution selection
     def on_dist_change(self, event=None):
@@ -759,34 +1010,244 @@ class CinemaApp:
             self.label_b.grid_remove()
             self.e_b.grid_remove()
 
+    def on_arrival_dist_change(self, event=None):
+        dist = self.cb_arrival_dist.get()
+
+        # First hide everything
+        try:
+            self.label_lambda.grid_remove()
+            self.e_lambda.grid_remove()
+            self.label_arrival_a.grid_remove()
+            self.e_arrival_a.grid_remove()
+            self.label_arrival_b.grid_remove()
+            self.e_arrival_b.grid_remove()
+        except:
+            pass
+
+        if dist == "uniform":
+            # Show a & b like service distribution style
+            self.label_arrival_a.grid(row=0, column=0, sticky="w", pady=4)
+            self.e_arrival_a.grid(row=0, column=1, sticky="e")
+            self.label_arrival_b.grid(row=0, column=2, sticky="w")
+            self.e_arrival_b.grid(row=0, column=3, sticky="e")
+        else:
+            # Default Poisson etc → show mean lambda
+            self.label_lambda.grid(row=0, column=0, sticky="w", pady=4)
+            self.e_lambda.grid(row=0, column=1, sticky="e")
+
+        # If model is M/M/s and arrival distribution was set to exponential, keep it; nothing forced here.
 
     def on_model_change(self, event=None):
         model = self.cb_model.get()
-        if model.startswith("M/M"):
-            # force exponential
-            self.cb_dist.set("exponential")
-            self.on_dist_change()
-        else:
-            # leave existing distribution as-is
+
+        if model.startswith("M/M") or model.startswith("M/G"):
+            # These systems always use Poisson arrivals
+            self.cb_arrival_dist.set("poisson")
+            
+            # Hide a/b for arrival, show lambda field
+            try:
+                self.e_lambda.grid(row=0, column=1)
+            except Exception:
+                pass
+
+            self.on_arrival_dist_change()
+
+            # For M/M force exponential service
+            if model.startswith("M/M"):
+                self.cb_dist.set("exponential")
+
             self.on_dist_change()
 
-    # ---------- main run ----------
+            # Disable arrival distribution selection
+            self.cb_arrival_dist.configure(state="disabled")
+
+        elif model.startswith("G/G"):
+            # Enable arrival distribution dropdown
+            self.cb_arrival_dist.configure(state="readonly")
+
+            # Hide lambda because arrival dist controls input
+            try:
+                self.e_lambda.grid_remove()
+            except Exception:
+                pass
+
+            # Show/hide arrival fields based on selected dist
+            self.on_arrival_dist_change()
+            self.on_dist_change()
+
+    # ---------- NEW: Queueing System Run ----------
+    def run_queueing_system(self):
+        try:
+            # Get parameters from UI
+            model = self.cb_model.get()
+            
+            # Get arrival rate (lambda)
+            if self.cb_arrival_dist.get() == "uniform":
+                # For uniform, estimate lambda from a and b
+                try:
+                    a = float(self.e_arrival_a.get())
+                    b = float(self.e_arrival_b.get())
+                    arrival_rate = 2.0 / (a + b)  # Approximate lambda for uniform
+                except:
+                    messagebox.showerror("Invalid Input", "Enter valid arrival a and b values.")
+                    return
+            else:
+                try:
+                    arrival_rate = float(self.e_lambda.get())
+                except:
+                    messagebox.showerror("Invalid Input", "Enter valid mean arrival λ.")
+                    return
+            
+            # Get service rate (mu)
+            if self.cb_dist.get() == "uniform":
+                try:
+                    a = float(self.e_a.get())
+                    b = float(self.e_b.get())
+                    service_rate = 2.0 / (a + b)  # Approximate mu for uniform
+                except:
+                    messagebox.showerror("Invalid Input", "Enter valid service a and b values.")
+                    return
+            else:
+                try:
+                    service_rate = float(self.e_mu.get())
+                except:
+                    messagebox.showerror("Invalid Input", "Enter valid mean service μ.")
+                    return
+            
+            # Get number of servers
+            try:
+                servers = int(self.e_servers.get())
+                if servers <= 0:
+                    raise ValueError("servers must be positive")
+            except Exception as e:
+                messagebox.showerror("Invalid Input", "Enter valid number of servers (positive integer).")
+                return
+            
+            # Get variances
+            try:
+                service_variance = float(self.e_service_var.get())
+                arrival_variance = float(self.e_arrival_var.get())
+                if service_variance < 0 or arrival_variance < 0:
+                    raise ValueError("Variances must be non-negative")
+            except Exception as e:
+                messagebox.showerror("Invalid Input", "Enter valid variance values (non-negative numbers).")
+                return
+            
+            # Calculate queueing theory results based on model
+            try:
+                if model == "M/M/s":
+                    Lq, Wq, Ws, Ls, idle = MMC_Queueing(arrival_rate, service_rate, servers)
+                    formula_used = "M/M/s (Exponential arrivals and service, multi-server)"
+                elif model == "M/G/s":
+                    Lq, Wq, Ws, Ls, idle = MGC_Queueing(arrival_rate, service_rate, servers, service_variance)
+                    formula_used = "M/G/s (Poisson arrivals, general service, multi-server)"
+                elif model == "G/G/s":
+                    Lq, Wq, Ws, Ls, idle = GGC_Queueing(arrival_rate, service_rate, servers, arrival_variance, service_variance)
+                    formula_used = "G/G/s (General arrivals and service, multi-server)"
+                else:
+                    messagebox.showerror("Error", f"Unknown model: {model}")
+                    return
+                    
+            except ValueError as e:
+                messagebox.showwarning("System Unstable", f"Cannot compute: {e}")
+                return
+            except Exception as e:
+                messagebox.showerror("Calculation Error", f"Error in queueing calculations: {e}")
+                return
+            
+            # Store results
+            self.last_queueing_result = {
+                'Lq': Lq, 'Wq': Wq, 'Ws': Ws, 'Ls': Ls, 'idle': idle,
+                'arrival_rate': arrival_rate, 'service_rate': service_rate,
+                'servers': servers, 'model': model, 'formula': formula_used
+            }
+            
+            # Display results in the queueing tab
+            self.display_queueing_results()
+            
+            # Switch to queueing tab
+            self.nb.select(self.tab_queueing)
+            
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to run queueing system: {e}")
+
+    def display_queueing_results(self):
+        """Display queueing theory results in the queueing tab"""
+        if not self.last_queueing_result:
+            return
+            
+        # Clear previous results
+        for i in self.tree_queueing.get_children():
+            self.tree_queueing.delete(i)
+        
+        # Add results to treeview
+        result = self.last_queueing_result
+        metrics = [
+            ("Average queue length (Lq)", f"{result['Lq']:.4f}", "Average number of customers waiting in queue"),
+            ("Average wait time in queue (Wq)", f"{result['Wq']:.4f}", "Average time a customer spends waiting"),
+            ("Average system time (Ws)", f"{result['Ws']:.4f}", "Average total time in system (wait + service)"),
+            ("Average system length (Ls)", f"{result['Ls']:.4f}", "Average number of customers in system"),
+            ("Server idle probability", f"{result['idle']:.4f}", "Probability all servers are idle"),
+            ("Utilization (ρ)", f"{1 - result['idle']:.4f}", "Server utilization factor"),
+            ("Arrival rate (λ)", f"{result['arrival_rate']:.4f}", "Customers per time unit"),
+            ("Service rate (μ)", f"{result['service_rate']:.4f}", "Customers served per time unit per server"),
+            ("Number of servers", f"{result['servers']}", "Parallel servers available")
+        ]
+        
+        for metric, value, desc in metrics:
+            self.tree_queueing.insert("", "end", values=(metric, value, desc))
+        
+        # Update info text
+        self.queueing_info.delete("1.0", END)
+        self.queueing_info.insert("1.0", f"Queueing Theory Results for {result['model']} Model\n\n")
+        self.queueing_info.insert("end", f"Formula used: {result['formula']}\n\n")
+        self.queueing_info.insert("end", "Key metrics:\n")
+        self.queueing_info.insert("end", f"• Traffic intensity ρ = λ/(cμ) = {result['arrival_rate']:.4f}/({result['servers']}×{result['service_rate']:.4f}) = {result['arrival_rate']/(result['servers']*result['service_rate']):.4f}\n")
+        self.queueing_info.insert("end", f"• System is {'stable' if result['arrival_rate']/(result['servers']*result['service_rate']) < 1 else 'unstable'}\n")
+        self.queueing_info.insert("end", "\nNote: These are theoretical results based on queueing formulas.")
+        self.queueing_info.insert("end", "\nFor simulation-based results, use the 'Run Simulation' button.")
+
+    # ---------- main run (original simulation) ----------
     def run_sim(self):
         try:
-            lam = float(self.e_lambda.get())
-            # determine distribution type and read fields appropriately
+            # read arrival inputs depending on arrival distribution
+            arrival_dist = self.cb_arrival_dist.get()
+            if arrival_dist == "uniform":
+                try:
+                    arrival_a = float(self.e_arrival_a.get())
+                    arrival_b = float(self.e_arrival_b.get())
+                except Exception:
+                    messagebox.showerror("Invalid Input", "Enter valid numeric values for arrival a and b.")
+                    return
+                if arrival_b <= arrival_a:
+                    messagebox.showwarning("Invalid Input", "Value b must be greater than a for uniform arrival distribution.")
+                    return
+                lam = None
+            else:
+                try:
+                    lam = float(self.e_lambda.get())
+                except Exception:
+                    messagebox.showerror("Invalid Input", "Enter valid numeric value for mean arrival λ.")
+                    return
+                if lam <= 0:
+                    messagebox.showwarning("Invalid Input", "Mean arrival must be positive.")
+                    return
+                arrival_a = None
+                arrival_b = None
+
+            # determine distribution type for service and read fields appropriately
             dist_type = self.cb_dist.get()
 
             if dist_type == "uniform":
-                # read a and b
+                # read a and b for service
                 try:
                     a = float(self.e_a.get())
                     b = float(self.e_b.get())
                 except Exception:
-                    messagebox.showerror("Invalid Input", "Enter valid numeric values for a and b.")
+                    messagebox.showerror("Invalid Input", "Enter valid numeric values for service a and b.")
                     return
                 if b <= a:
-                    messagebox.showwarning("Invalid Input", "Value b must be greater than a for uniform distribution.")
+                    messagebox.showwarning("Invalid Input", "Value b must be greater than a for uniform service distribution.")
                     return
                 mu = None
             else:
@@ -805,7 +1266,7 @@ class CinemaApp:
             pl = int(self.e_plow.get()); ph = int(self.e_phigh.get())
             if pl > ph:
                 raise ValueError("priority low > high")
-            if lam <= 0:
+            if arrival_dist != "uniform" and (lam is None or lam <= 0):
                 messagebox.showwarning("Invalid Input", "Mean arrival must be positive.")
                 return
         except Exception as e:
@@ -835,17 +1296,32 @@ class CinemaApp:
                 else:
                     mu = 1.0
 
+        # RANDOM stopping criteria: if G/G/s chosen, generate random number of customers 8-20
+        n_override = None
+        if model.startswith("G/G"):
+            n_override = random.randint(8, 20)
+
+        # run appropriate simulation
         if use_priority:
-            # preemptive priority simulation handles priorities
-            res = simulate_preemptive_v5(lam, mu, servers_count=servers, pr_range=(pl, ph), dist_type=dist_type, a=a, b=b)
+            res = simulate_preemptive_v5(lam, mu, servers_count=servers, pr_range=(pl, ph),
+                                         dist_type=dist_type, a=a, b=b,
+                                         n_override=n_override,
+                                         arrival_dist=arrival_dist, arrival_a=arrival_a, arrival_b=arrival_b)
         else:
-            res = simulate_nonpreemptive_fcfs(lam, mu, servers_count=servers, dist_type=dist_type, a=a, b=b)
+            res = simulate_nonpreemptive_fcfs(lam, mu, servers_count=servers, dist_type=dist_type, a=a, b=b,
+                                              n_override=n_override,
+                                              arrival_dist=arrival_dist, arrival_a=arrival_a, arrival_b=arrival_b)
 
         # store last result
         self.last_result = res
 
         # populate event table treeview
         self.populate_event_table(res, use_priority)
+        # Adjust priority column visibility based on mode
+        if use_priority:
+            self.tree.column("priority", width=80, stretch=True)
+        else:
+            self.tree.column("priority", width=0, stretch=False)
 
         # populate performance table
         self.populate_performance(res)
@@ -861,14 +1337,15 @@ class CinemaApp:
         # insert rows
         if use_priority:
             for i, p in enumerate(res['customers']):
-                vals = (i+1, res['inter_arr'][i], res['arrivals'][i], res['services'][i],
+                vals = (i+1, res['inter_arr'][i] if i < len(res['inter_arr']) else 0, res['arrivals'][i],
+                        res['services'][i],
                         p.priority if p.priority is not None else "", p.first_start if p.first_start is not None else 0,
                         p.end if p.end is not None else 0, p.turnaround if p.turnaround is not None else 0,
                         p.wait if p.wait is not None else 0, p.response if p.response is not None else 0)
                 self.tree.insert("", "end", values=vals)
         else:
             for i, p in enumerate(res['customers']):
-                vals = (i+1, res['inter_arr'][i], res['arrivals'][i], res['services'][i],
+                vals = (i+1, res['inter_arr'][i] if i < len(res['inter_arr']) else 0, res['arrivals'][i], res['services'][i],
                         "", p.first_start if p.first_start is not None else 0,
                         p.end if p.end is not None else 0, p.turnaround if p.turnaround is not None else 0,
                         p.wait if p.wait is not None else 0, p.response if p.response is not None else 0)
@@ -897,7 +1374,6 @@ class CinemaApp:
             avgr = mean([p.response for p in pats])
             util_display = formatted_utils.get(sid, 0.0)
             self.tree_perf.insert("", "end", values=(sid, f"{avgt:.1f}", f"{avgw:.1f}", f"{avgr:.1f}", f"{util_display:.3f}"))
-
 
     # draw_gantt_and_charts adapted to pack into gantt_frame (re-used mostly)
     def draw_gantt_and_charts(self, segments, customers, use_priority, model, timeline=None, queue=None, util_time=None):
